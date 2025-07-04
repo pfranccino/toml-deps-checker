@@ -19,22 +19,26 @@ Un script automatizado para verificar y comparar las versiones de dependencias M
 
 - Python 3.6+
 - Bash
+- jq (para generar reportes formateados)
 - Acceso a internet para consultas Maven
 
 ## 🛠️ Instalación
 
 1. Clona este repositorio:
 ```bash
-git clone https://github.com/pfranccino/gradle-deps-monitor.git
-cd gradle-deps-monitor
+git clone https://github.com/pfranccino/toml-deps-checker.git
+cd toml-deps-checker
 ```
 
-2. Dale permisos de ejecución al script:
+2. Dale permisos de ejecución a los scripts:
 ```bash
 chmod +x check-dependencies.sh
+chmod +x generate_dependency_report.sh
 ```
 
 ## 📖 Uso
+
+### Verificación de dependencias
 
 Ejecuta el script proporcionando la ruta a tu directorio Gradle que contiene `libs.versions.toml`:
 
@@ -42,10 +46,29 @@ Ejecuta el script proporcionando la ruta a tu directorio Gradle que contiene `li
 ./check-dependencies.sh /ruta/al/directorio/gradle
 ```
 
-### Ejemplo:
+#### Ejemplo:
 ```bash
 ./check-dependencies.sh ./app/gradle
 ```
+
+### Generación de reportes
+
+Después de ejecutar la verificación de dependencias, puedes generar un reporte formateado usando:
+
+```bash
+./generate_dependency_report.sh [archivo_json]
+```
+
+Si no se proporciona un archivo JSON, se utilizará `dependency_status.json` por defecto.
+
+#### Ejemplo:
+```bash
+./generate_dependency_report.sh
+# O especificando un archivo JSON personalizado:
+./generate_dependency_report.sh mi_archivo.json
+```
+
+El script generará un archivo `dependency_report.txt` con un formato legible de todas las dependencias y sus estados.
 
 ## 📊 Salida
 
@@ -75,13 +98,17 @@ El script genera un archivo `dependency_status.json` con información detallada 
 ## 🏗️ Estructura del proyecto
 
 ```
-├── check-dependencies.sh    # Script principal de Bash
-├── version-stats.py        # Script de Python para análisis
-├── README.md              # Este archivo
-└── dependency_status.json # Archivo de salida (generado)
+├── check-dependencies.sh         # Script principal de Bash
+├── generate_dependency_report.sh # Script para generar reportes formateados
+├── version-stats.py              # Script de Python para análisis
+├── README.md                     # Este archivo
+├── dependency_status.json        # Archivo de salida JSON (generado)
+└── dependency_report.txt         # Archivo de reporte formateado (generado)
 ```
 
 ## ⚙️ Cómo funciona
+
+### check-dependencies.sh
 
 1. **Validación**: Verifica que existe el directorio y el archivo `libs.versions.toml`
 2. **Entorno virtual**: Crea y activa un entorno virtual Python
@@ -92,6 +119,15 @@ El script genera un archivo `dependency_status.json` con información detallada 
    - Consulta Maven Central y/o Google Maven por las últimas versiones
 5. **Comparación**: Evalúa el estado de cada dependencia
 6. **Reporte**: Genera un archivo JSON con los resultados
+
+### generate_dependency_report.sh
+
+1. **Validación**: Verifica que existe el archivo JSON de entrada (por defecto `dependency_status.json`)
+2. **Procesamiento**: 
+   - Utiliza `jq` para procesar el archivo JSON
+   - Extrae información de cada dependencia (nombre, versión actual, última versión, estado)
+3. **Formateo**: Formatea cada dependencia según un formato legible
+4. **Reporte**: Genera un archivo de texto (`dependency_report.txt`) con el reporte formateado
 
 ## 🔧 Configuración
 
