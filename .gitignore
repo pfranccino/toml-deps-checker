@@ -124,3 +124,4 @@ Thumbs.db
 
 # Logs
 *.log
+/dependency_report.txt
