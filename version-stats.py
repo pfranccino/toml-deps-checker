@@ -59,8 +59,9 @@ _QUALIFIER_RANKS = (
 
 _NUMERIC_RE = re.compile(r"^(\d+(?:\.\d+)*)(.*)$")
 
-# Un BOM que se pasa de meses respecto al ultimo se marca en rojo.
-CALVER_MONTHS_MAJOR = 6
+# Umbrales por defecto, ajustables desde la linea de comandos.
+PATCH_THRESHOLD = 5  # diferencia de patch a partir de la cual deja de ser 🟢
+CALVER_MONTHS_MAJOR = 6  # meses de retraso de un BOM CalVer para marcarlo en rojo
 
 STATUS_EMOJI = {
     "major": "🔴",
@@ -71,6 +72,22 @@ STATUS_EMOJI = {
     "managed": "⚪",
     "unknown": "⚫",
 }
+
+# Gravedad de cada estado, para decidir el codigo de salida en CI.
+# "unknown" vale 0 a proposito: que un repositorio no responda es un aviso, no
+# un incumplimiento de politica, y no debe tenyir el build de rojo.
+STATUS_SEVERITY = {
+    "major": 3,
+    "minor": 2,
+    "patch": 1,
+    "prerelease": 1,
+    "ok": 0,
+    "managed": 0,
+    "unknown": 0,
+}
+
+# --fail-on <nivel>: gravedad minima que hace fallar la ejecucion.
+FAIL_LEVELS = {"never": 99, "major": 3, "minor": 2, "any": 1}
 
 _QUIET = False
 
@@ -171,7 +188,12 @@ def pick_latest(versions: list[str], min_rank: int, flavor: str = "") -> str | N
     return best_version
 
 
-def compare_versions(current: str, latest: str | None) -> str:
+def compare_versions(
+    current: str,
+    latest: str | None,
+    patch_threshold: int = PATCH_THRESHOLD,
+    calver_months_major: int = CALVER_MONTHS_MAJOR,
+) -> str:
     """Codigo de estado comparando la version en uso con la ultima disponible.
 
     La comparacion es lexicografica sobre la clave completa: comparar cada
@@ -195,7 +217,7 @@ def compare_versions(current: str, latest: str | None) -> str:
     # release rutinaria, asi que se mide la distancia real en meses.
     if is_calver(current_key) and is_calver(latest_key):
         months = (latest_nums[0] - current_nums[0]) * 12 + (latest_nums[1] - current_nums[1])
-        if months >= CALVER_MONTHS_MAJOR:
+        if months >= calver_months_major:
             return "major"
         if months >= 1:
             return "minor"
@@ -206,7 +228,7 @@ def compare_versions(current: str, latest: str | None) -> str:
     if latest_nums[1] > current_nums[1]:
         return "minor"
     if latest_nums[2] > current_nums[2]:
-        return "patch" if latest_nums[2] - current_nums[2] > 5 else "ok"
+        return "patch" if latest_nums[2] - current_nums[2] > patch_threshold else "ok"
 
     # Mismos numeros: la diferencia esta en el canal (estas en un pre-release
     # y ya salio la version final) o en la secuencia del pre-release.
@@ -518,10 +540,18 @@ class MavenRepository:
 class MavenVersionChecker:
     """Recorre el catalogo y produce el informe, apoyandose en un MavenRepository."""
 
-    def __init__(self, repository: MavenRepository, channel: str = "stable"):
+    def __init__(
+        self,
+        repository: MavenRepository,
+        channel: str = "stable",
+        patch_threshold: int = PATCH_THRESHOLD,
+        calver_months_major: int = CALVER_MONTHS_MAJOR,
+    ):
         self.repo = repository
         self.channel = channel
         self.min_rank = CHANNEL_MIN_RANK[channel]
+        self.patch_threshold = patch_threshold
+        self.calver_months_major = calver_months_major
         log(f"Iniciando MavenVersionChecker (canal: {channel}, {repository.jobs} hilos)...")
 
     def resolve_versions(self, dep: Dependency) -> dict[str, str | None]:
@@ -599,7 +629,12 @@ class MavenVersionChecker:
                 continue
 
             resolved = self.resolve_versions(dep)
-            status = compare_versions(dep.version, resolved["latest"])
+            status = compare_versions(
+                dep.version,
+                resolved["latest"],
+                self.patch_threshold,
+                self.calver_months_major,
+            )
             entry = self._entry(dep, timestamp, status, resolved)
 
             # Para un BOM desactualizado, decir que traeria subirlo.
@@ -659,6 +694,23 @@ class MavenVersionChecker:
 # --------------------------------------------------------------------------
 # Salida
 # --------------------------------------------------------------------------
+
+
+def policy_violations(result: dict[str, Any], fail_on: str) -> list[str]:
+    """Dependencias que incumplen la politica de --fail-on, de peor a mejor.
+
+    Las que salen en ⚫ nunca cuentan: que un repositorio no responda es un
+    aviso, no un incumplimiento, y no debe hacer fallar el build.
+    """
+    if fail_on == "never":
+        return []
+    umbral = FAIL_LEVELS[fail_on]
+    incumplen = [
+        (STATUS_SEVERITY[info["status_code"]], nombre)
+        for nombre, info in result.items()
+        if STATUS_SEVERITY[info["status_code"]] >= umbral
+    ]
+    return [nombre for _, nombre in sorted(incumplen, key=lambda x: (-x[0], x[1]))]
 
 
 def print_summary(result: dict[str, Any], warnings: list[str]) -> None:
@@ -725,6 +777,28 @@ def main() -> int:
     parser.add_argument(
         "-j", "--jobs", type=int, default=8, help="Peticiones en paralelo (por defecto: 8)"
     )
+    parser.add_argument(
+        "--fail-on",
+        choices=tuple(FAIL_LEVELS),
+        default="never",
+        help="Sale con código 1 si alguna dependencia llega a este nivel. "
+             "'major' solo 🔴; 'minor' añade los minor; 'any' cualquier desactualización. "
+             "Las ⚫ nunca hacen fallar (por defecto: never).",
+    )
+    parser.add_argument(
+        "--patch-threshold",
+        type=int,
+        default=PATCH_THRESHOLD,
+        help=f"Diferencia de patch a partir de la cual deja de considerarse al día "
+             f"(por defecto: {PATCH_THRESHOLD})",
+    )
+    parser.add_argument(
+        "--calver-months",
+        type=int,
+        default=CALVER_MONTHS_MAJOR,
+        help=f"Meses de retraso de un BOM con versionado por fecha para marcarlo en rojo "
+             f"(por defecto: {CALVER_MONTHS_MAJOR})",
+    )
     args = parser.parse_args()
 
     _QUIET = args.quiet
@@ -733,7 +807,12 @@ def main() -> int:
     log("\n🚀 Iniciando verificador de versiones Maven")
 
     repository = MavenRepository(timeout=args.timeout, jobs=args.jobs)
-    checker = MavenVersionChecker(repository, channel=channel)
+    checker = MavenVersionChecker(
+        repository,
+        channel=channel,
+        patch_threshold=args.patch_threshold,
+        calver_months_major=args.calver_months,
+    )
     try:
         result, warnings = checker.process_toml_file(args.folder)
     except FileNotFoundError as exc:
@@ -755,6 +834,24 @@ def main() -> int:
 
     print_summary(result, warnings)
     print(f"\n💾 Resultados guardados en: {output_file}")
+
+    sin_resolver = [n for n, i in result.items() if i["status_code"] == "unknown"]
+    if sin_resolver and args.fail_on != "never":
+        # No cuentan para el código de salida, pero no pueden pasar en silencio:
+        # un repositorio caído deja huecos en el análisis, no un visto bueno.
+        print(
+            f"\n⚫ {len(sin_resolver)} sin verificar (no afectan al código de salida): "
+            + ", ".join(sin_resolver)
+        )
+
+    incumplen = policy_violations(result, args.fail_on)
+    if incumplen:
+        print(f"\n❌ --fail-on {args.fail_on}: {len(incumplen)} dependencias incumplen la política")
+        for nombre in incumplen:
+            print(f"   {result[nombre]['status']} {nombre} "
+                  f"{result[nombre]['version_used']} → {result[nombre]['latest_version']}")
+        return 1
+
     return 0
 
 

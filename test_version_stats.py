@@ -98,6 +98,68 @@ class TestCalVer(unittest.TestCase):
         self.assertEqual(vs.compare_versions("2026.08.00", "2026.08.00"), "ok")
 
 
+class TestUmbralesConfigurables(unittest.TestCase):
+    def test_patch_threshold_por_defecto(self):
+        self.assertEqual(vs.compare_versions("1.2.3", "1.2.8"), "ok")
+        self.assertEqual(vs.compare_versions("1.2.3", "1.2.9"), "patch")
+
+    def test_patch_threshold_estricto(self):
+        self.assertEqual(vs.compare_versions("1.2.3", "1.2.4", patch_threshold=0), "patch")
+
+    def test_patch_threshold_laxo(self):
+        self.assertEqual(vs.compare_versions("1.2.3", "1.2.99", patch_threshold=100), "ok")
+
+    def test_calver_months_configurable(self):
+        # 3 meses de retraso: minor con el umbral por defecto (6), major si se baja a 3.
+        self.assertEqual(vs.compare_versions("2026.01.00", "2026.04.00"), "minor")
+        self.assertEqual(
+            vs.compare_versions("2026.01.00", "2026.04.00", calver_months_major=3), "major"
+        )
+
+
+class TestPolicyViolations(unittest.TestCase):
+    RESULTADO = {
+        "g:major": {"status_code": "major"},
+        "g:minor": {"status_code": "minor"},
+        "g:patch": {"status_code": "patch"},
+        "g:ok": {"status_code": "ok"},
+        "g:managed": {"status_code": "managed"},
+        "g:unknown": {"status_code": "unknown"},
+    }
+
+    def test_never_no_falla_nunca(self):
+        self.assertEqual(vs.policy_violations(self.RESULTADO, "never"), [])
+
+    def test_major_solo_cuenta_los_rojos(self):
+        self.assertEqual(vs.policy_violations(self.RESULTADO, "major"), ["g:major"])
+
+    def test_minor_incluye_major(self):
+        self.assertEqual(vs.policy_violations(self.RESULTADO, "minor"), ["g:major", "g:minor"])
+
+    def test_any_incluye_patch(self):
+        self.assertEqual(
+            vs.policy_violations(self.RESULTADO, "any"), ["g:major", "g:minor", "g:patch"]
+        )
+
+    def test_unknown_nunca_hace_fallar(self):
+        # Un repositorio caído es un aviso, no un incumplimiento.
+        for nivel in ("major", "minor", "any"):
+            self.assertNotIn("g:unknown", vs.policy_violations(self.RESULTADO, nivel))
+
+    def test_managed_y_ok_nunca_hacen_fallar(self):
+        for nivel in ("major", "minor", "any"):
+            violaciones = vs.policy_violations(self.RESULTADO, nivel)
+            self.assertNotIn("g:managed", violaciones)
+            self.assertNotIn("g:ok", violaciones)
+
+    def test_ordenadas_de_peor_a_mejor(self):
+        self.assertEqual(vs.policy_violations(self.RESULTADO, "any")[0], "g:major")
+
+    def test_resultado_limpio_no_incumple(self):
+        limpio = {"g:ok": {"status_code": "ok"}, "g:unknown": {"status_code": "unknown"}}
+        self.assertEqual(vs.policy_violations(limpio, "any"), [])
+
+
 class TestFlavors(unittest.TestCase):
     VERSIONES = ["31.1-jre", "31.1-android", "33.7.1-jre", "33.7.1-android"]
 

@@ -70,6 +70,46 @@ Cada canal incluye los más estables que él. Otras opciones: `-o/--output` para
 la ruta del JSON, `-q/--quiet` para silenciar el progreso, `-j/--jobs` para las
 peticiones en paralelo (por defecto 8) y `--timeout` para el tiempo por petición.
 
+## 🤖 Uso en CI
+
+Por defecto el script **nunca falla por política**: analiza, informa y sale con 0. Para
+que un pipeline pueda bloquear, se usa `--fail-on`:
+
+```bash
+./check-dependencies.sh ./app/gradle --fail-on major   # falla si hay algún 🔴
+./check-dependencies.sh ./app/gradle --fail-on minor   # 🔴 y los minor
+./check-dependencies.sh ./app/gradle --fail-on any     # cualquier desactualización
+```
+
+Las dependencias en ⚫ (no se pudieron consultar) **nunca hacen fallar**: que un
+repositorio no responda es un problema de red, no un incumplimiento, y no tiene
+sentido teñir el build de rojo por ello. Sí se listan aparte al final para que no
+pasen desapercibidas.
+
+Los umbrales también son ajustables, por si el criterio por defecto no encaja:
+
+```bash
+--patch-threshold 0    # cualquier patch por detrás cuenta como desactualizado
+--calver-months 3      # un BOM CalVer con 3 meses de retraso ya es 🔴
+```
+
+### GitHub Actions
+
+```yaml
+- name: Comprobar dependencias
+  run: ./check-dependencies.sh ./gradle --fail-on major --quiet
+
+- name: Publicar informe
+  if: always()          # también cuando el paso anterior falla
+  uses: actions/upload-artifact@v4
+  with:
+    name: dependency-status
+    path: dependency_status.json
+```
+
+El `if: always()` importa: sin él, el informe se pierde justo cuando falla, que es
+cuando hace falta leerlo.
+
 ## 🧪 Tests
 
 Las funciones puras (parseo del catálogo, orden de versiones, canales, CalVer,
