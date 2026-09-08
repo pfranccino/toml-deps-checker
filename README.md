@@ -12,8 +12,9 @@ Un script automatizado para verificar y comparar las versiones de dependencias M
 - 🔍 Consulta automáticamente Maven Central y Google Maven
 - 📊 Categoriza dependencias por estado de actualización:
   - 🔴 Diferencia Major (actualización importante requerida)
-  - 🟡 Diferencia Minor o Patch > 5 (actualización recomendada)
-  - 🟢 Actualizado (diferencia mínima o igual)
+  - 🟡 Diferencia Minor, o Patch por encima del umbral configurable
+  - 🟢 Actualizado (igual, más nuevo, o diferencia por debajo del umbral)
+  - ⚪ Gestionada por un BOM
   - ⚫ Estado desconocido (no se pudo verificar)
 - 🏷️ Distingue entre dependencias de Google y Maven Central
 - 💾 Genera reporte JSON detallado
@@ -70,34 +71,94 @@ Cada canal incluye los más estables que él. Otras opciones: `-o/--output` para
 la ruta del JSON, `-q/--quiet` para silenciar el progreso, `-j/--jobs` para las
 peticiones en paralelo (por defecto 8) y `--timeout` para el tiempo por petición.
 
-## 🎚️ Ajustar qué se considera aceptable
+## 🎚️ Cómo se decide el color
 
-Los criterios por defecto son un punto de partida, no una verdad universal. Dos flags
-los mueven:
+### El orden de decisión
 
-| Flag | Por defecto | Qué controla |
+Para cada dependencia se compara la versión en uso con la última del canal elegido:
+
+1. **¿La tuya es igual o más nueva?** → 🟢. La comparación es lexicográfica sobre la
+   tupla completa, así que ir por delante nunca se marca como desactualizado.
+2. **¿Ambas usan versionado por fecha?** (el primer número es un año entre 2000 y 2999)
+   → se mide en **meses**, ver más abajo.
+3. **Si no**, se aplica semver: major → 🔴, minor → 🟡, patch → según el umbral.
+4. **¿Mismos números pero distinto canal?** (estás en un `-alpha` y ya salió la final)
+   → 🟡.
+
+### Qué se puede configurar y qué no
+
+Solo los dos escalones más bajos. Lo grave no se negocia:
+
+| Nivel | Regla | Configurable |
 |---|---|---|
-| `--patch-threshold N` | `5` | Cuántos parches por detrás se toleran antes de dejar de ser 🟢 |
-| `--calver-months N` | `6` | Meses de retraso de un BOM con versionado por fecha para marcarlo 🔴 |
+| major | 1 de diferencia ya es 🔴 | ❌ |
+| minor | 1 de diferencia ya es 🟡 | ❌ |
+| patch | tolera hasta N | ✅ `--patch-threshold` (por defecto `5`) |
+| fecha (CalVer) | 🟡 desde 1 mes, 🔴 desde N | ✅ `--calver-months` (por defecto `6`) |
 
-El mismo catálogo con criterios distintos:
+Ojo con el minor: **no tiene umbral**. Estar 2 minors por detrás se ve igual que estar
+18, ambos 🟡. Para distinguirlos hay que mirar las columnas de versión, no el color.
 
-```bash
-# Por defecto: tolerante con los parches
-$ ./check-dependencies.sh ./gradle
-🟡 androidx.compose:compose-bom                 2026.04.01  2026.08.00
-🟢 com.fasterxml.jackson.core:jackson-databind  2.22.0      2.22.2
+### `--patch-threshold`
 
-# Estricto: cualquier parche cuenta, y 3 meses de BOM ya es rojo
-$ ./check-dependencies.sh ./gradle --patch-threshold 0 --calver-months 3
-🔴 androidx.compose:compose-bom                 2026.04.01  2026.08.00
-🟡 com.fasterxml.jackson.core:jackson-databind  2.22.0      2.22.2
+Cuántos parches por detrás siguen contando como al día. Tu versión `1.2.0` contra
+`1.2.N`:
+
+```
+parches por detrás :  0   1   2   3   4   5   6   7   8
+por defecto (5)    : 🟢  🟢  🟢  🟢  🟢  🟢  🟡  🟡  🟡
+--patch-threshold 3: 🟢  🟢  🟢  🟢  🟡  🟡  🟡  🟡  🟡
+--patch-threshold 0: 🟢  🟡  🟡  🟡  🟡  🟡  🟡  🟡  🟡
 ```
 
-`--patch-threshold 0` significa "cualquier versión por detrás me interesa". Súbelo si
-el informe te resulta ruidoso.
+`0` significa "cualquier versión por detrás me interesa". Una diferencia de patch nunca
+llega a 🔴, por grande que sea.
 
-Para no repetir los flags, envuélvelos en un script del proyecto:
+### `--calver-months`
+
+Meses de retraso antes de marcar en rojo. Tu BOM en `2026.01.00` contra N meses después:
+
+```
+meses por detrás  :  0   1   2   3   4   5   6   7   8
+por defecto (6)   : 🟢  🟡  🟡  🟡  🟡  🟡  🔴  🔴  🔴
+--calver-months 3 : 🟢  🟡  🟡  🔴  🔴  🔴  🔴  🔴  🔴
+--calver-months 2 : 🟢  🟡  🔴  🔴  🔴  🔴  🔴  🔴  🔴
+```
+
+Verde es **solo el mismo mes**, no un rango. Y `--calver-months 1` deja el amarillo sin
+banda: cualquier versión de otro mes salta directa a 🔴, así que `2` es el mínimo útil.
+
+El tercer número (`2026.08.**00**`) es una **revisión dentro del mes, no un día**: de
+`2026.01.00` a `2026.01.05` hay cero meses de diferencia, y sale 🟢.
+
+### Cuidado: los dos umbrales no cuentan igual
+
+Es una inconsistencia heredada que conviene tener presente al configurarlos:
+
+- En `--patch-threshold`, el número es **el último valor que sigue siendo 🟢**.
+- En `--calver-months`, el número es **el primero que ya es 🔴**.
+
+Con `3` en cada uno: 3 parches todavía es verde, pero 3 meses ya es rojo.
+
+### La fecha no depende de que sea un BOM
+
+La rama de meses se elige por **el formato de la versión**, no por el tipo de artefacto.
+`firebase-bom` es un BOM y usa major/minor, porque su versión es `34.18.0`:
+
+```bash
+$ ./check-dependencies.sh ./gradle --calver-months 2
+🔴 androidx.compose:compose-bom      2026.04.01  2026.08.00   ← CalVer, le afecta
+🟡 com.google.firebase:firebase-bom  34.10.0     34.18.0      ← semver, ni se entera
+🟡 com.squareup.okhttp3:okhttp       5.4.0       5.5.0        ← semver, ni se entera
+```
+
+De los BOM habituales, solo `compose-bom` usa fecha; `firebase-bom`, `okhttp-bom` y
+`kotlin-bom` usan semver. Y al revés: una librería normal con versión de tipo fecha
+también entraría por la rama de meses.
+
+### Fijar el criterio del equipo
+
+Como son flags, para no repetirlos envuélvelos en un script del proyecto:
 
 ```bash
 #!/bin/bash
@@ -162,7 +223,7 @@ El script genera un archivo `dependency_status.json` con información detallada 
 | `latest_stable` | La última estable, siempre presente sea cual sea el canal. |
 | `latest_prerelease` | El pre-release más alto, solo si va por delante de la estable. `N/A` si no hay. |
 | `channel` | Canal usado en esta ejecución. |
-| `status_code` | Versión legible por máquina del `status`: `ok`, `patch`, `minor`, `major`, `prerelease`, `unknown`. |
+| `status_code` | Versión legible por máquina del `status`: `ok`, `patch`, `minor`, `major`, `prerelease`, `managed`, `unknown`. |
 
 ## 🏗️ Estructura del proyecto
 
@@ -196,15 +257,17 @@ El script genera un archivo `dependency_status.json` con información detallada 
 
 ### Criterios de estado
 
-- 🔴 **Major**: Cambio en versión mayor (ej: 1.x.x → 2.x.x)
-- 🟡 **Minor/Patch**: Cambio en versión menor o parche > 5
-- 🟡 **Pre-release**: Estás en un alpha/beta/rc y ya salió la versión final
-- 🟢 **Actualizado**: Versión igual, más nueva, o diferencia mínima
-- ⚪ **Gestionada**: La versión la fija un BOM, no se actualiza por separado
-- ⚫ **Desconocido**: No se pudo determinar la versión
+| | `status_code` | Significado |
+|---|---|---|
+| 🔴 | `major` | Cambio de versión mayor, o BOM de fecha muy retrasado |
+| 🟡 | `minor` / `patch` | Versión menor, o parches por encima del umbral |
+| 🟡 | `prerelease` | Estás en un alpha/beta/rc y ya salió la versión final |
+| 🟢 | `ok` | Igual, más nueva, o diferencia por debajo del umbral |
+| ⚪ | `managed` | La versión la fija un BOM, no se actualiza por separado |
+| ⚫ | `unknown` | No se pudo consultar o interpretar la versión |
 
-Las versiones se comparan de forma lexicográfica sobre la tupla completa, así que una
-versión más nueva que la publicada nunca se marca como desactualizada.
+Los umbrales y el orden de decisión están detallados en
+la sección **Cómo se decide el color**.
 
 ### BOM (Bill of Materials)
 
@@ -227,10 +290,13 @@ Los BOM se detectan solos (artefactos acabados en `-bom`) y reciben un trato apa
 
 ### Versionado por fecha (CalVer)
 
-`compose-bom` no usa semver sino la fecha: `2026.08.00`. Comparar eso por
-major/minor/patch pondría en rojo todos los BOM cada enero, solo porque cambia el
-dígito del año. Cuando el primer componente es un año, la distancia se mide en
-**meses**: 🟡 a partir de 1 mes y 🔴 a partir de 6.
+`compose-bom` no usa semver sino la fecha: `2026.08.00`. Comparándolo por
+major/minor/patch pasaban dos cosas, ambas mal: dentro del mismo año se quedaba en 🟡
+para siempre por muchos meses que acumulara, y al cruzar de año saltaba a 🔴 aunque solo
+hubiera un mes de diferencia — todos los BOM en rojo cada enero.
+
+Cuando el primer componente es un año, la distancia se mide en **meses**. Ver
+[`--calver-months`](#--calver-months).
 
 ### Variantes paralelas
 
@@ -248,4 +314,4 @@ porque saltar de `-jre` a `-android` no es una actualización.
 
 ## 🐛 Reportar problemas
 
-Si encuentras algún bug o tienes una sugerencia, por favor abre un [issue](https://github.com/pfranccino/gradle-deps-monitor/issues).
+Si encuentras algún bug o tienes una sugerencia, por favor abre un [issue](https://github.com/pfranccino/toml-deps-checker/issues).
