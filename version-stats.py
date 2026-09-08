@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Verifica las versiones de un libs.versions.toml contra Maven Central y Google Maven."""
 import argparse
+import contextlib
 import json
 import os
 import re
@@ -10,7 +11,7 @@ import time
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import requests
 
@@ -28,10 +29,8 @@ except ModuleNotFoundError:  # pragma: no cover
 # En Windows stdout usa cp1252 cuando esta redirigido a un archivo o a una pipe,
 # y los emoji revientan con UnicodeEncodeError a mitad del analisis.
 for _stream in (sys.stdout, sys.stderr):
-    try:
+    with contextlib.suppress(AttributeError, ValueError):
         _stream.reconfigure(encoding="utf-8", errors="replace")
-    except (AttributeError, ValueError):
-        pass
 
 GOOGLE_MAVEN = "https://dl.google.com/android/maven2"
 MAVEN_CENTRAL = "https://repo1.maven.org/maven2"
@@ -103,7 +102,7 @@ def qualifier_rank(qualifier: str) -> int:
     return STABLE
 
 
-def version_key(version: str) -> Optional[Tuple[Tuple[int, int, int], int, int]]:
+def version_key(version: str) -> tuple[tuple[int, int, int], int, int] | None:
     """Convierte una version en una clave ordenable: (numeros, estabilidad, secuencia).
 
     Ordena los pre-releases por debajo de su version final, porque
@@ -131,7 +130,7 @@ def is_prerelease(version: str) -> bool:
     return key is not None and key[1] < STABLE
 
 
-def is_calver(key: Tuple[Tuple[int, int, int], int, int]) -> bool:
+def is_calver(key: tuple[tuple[int, int, int], int, int]) -> bool:
     """Detecta versionado por fecha: compose-bom usa 2026.08.00, no semver."""
     return 2000 <= key[0][0] <= 2999
 
@@ -152,7 +151,7 @@ def version_flavor(version: str) -> str:
     return qualifier.lower()
 
 
-def pick_latest(versions: List[str], min_rank: int, flavor: str = "") -> Optional[str]:
+def pick_latest(versions: list[str], min_rank: int, flavor: str = "") -> str | None:
     """Devuelve la version mas alta que alcance al menos `min_rank` de estabilidad.
 
     Se restringe al mismo flavor que la version en uso cuando existe alguno.
@@ -172,7 +171,7 @@ def pick_latest(versions: List[str], min_rank: int, flavor: str = "") -> Optiona
     return best_version
 
 
-def compare_versions(current: str, latest: Optional[str]) -> str:
+def compare_versions(current: str, latest: str | None) -> str:
     """Codigo de estado comparando la version en uso con la ultima disponible.
 
     La comparacion es lexicografica sobre la clave completa: comparar cada
@@ -228,7 +227,7 @@ class Dependency:
         self.artifact_id = artifact_id
         self.version = version  # None si la gestiona un BOM
         self.kind = kind
-        self.managed_by: Optional[str] = None
+        self.managed_by: str | None = None
 
     @property
     def coordinate(self) -> str:
@@ -248,7 +247,7 @@ class Dependency:
         return self.artifact_id == "bom" or self.artifact_id.endswith("-bom")
 
 
-def _plain_version(raw: Any) -> Optional[str]:
+def _plain_version(raw: Any) -> str | None:
     """Extrae el texto de una version, admitiendo las 'rich versions' de Gradle."""
     if isinstance(raw, str):
         return raw
@@ -259,7 +258,7 @@ def _plain_version(raw: Any) -> Optional[str]:
     return None
 
 
-def _resolve_version(raw: Any, versions: Dict[str, Any], warnings: List[str], alias: str):
+def _resolve_version(raw: Any, versions: dict[str, Any], warnings: list[str], alias: str):
     """Resuelve el campo `version` de una entrada, siguiendo version.ref si hace falta."""
     if raw is None:
         return None
@@ -275,18 +274,18 @@ def _resolve_version(raw: Any, versions: Dict[str, Any], warnings: List[str], al
     return _plain_version(raw)
 
 
-def parse_catalog(file_path: str) -> Tuple[List[Dependency], List[str]]:
+def parse_catalog(file_path: str) -> tuple[list[Dependency], list[str]]:
     """Lee el catalogo completo con tomllib.
 
     Cubre las formas que admite Gradle: module, group/name, atajo en string,
     version literal, version.ref, rich versions y la seccion [plugins].
     """
-    warnings: List[str] = []
+    warnings: list[str] = []
     with open(file_path, "rb") as handle:
         data = tomllib.load(handle)
 
     versions = data.get("versions", {})
-    deps: List[Dependency] = []
+    deps: list[Dependency] = []
 
     for alias, entry in data.get("libraries", {}).items():
         group_id = artifact_id = None
@@ -352,21 +351,23 @@ def _localname(tag: str) -> str:
     return tag.rsplit("}", 1)[-1]
 
 
-class MavenVersionChecker:
-    def __init__(
-        self, channel: str = "stable", timeout: int = 15, retries: int = 3, jobs: int = 8
-    ):
-        self.channel = channel
-        self.min_rank = CHANNEL_MIN_RANK[channel]
+def is_google_dependency(group_id: str) -> bool:
+    google_groups = ("com.google.", "androidx.", "android.arch.", "com.android.")
+    return group_id.startswith(google_groups)
+
+
+class MavenRepository:
+    """Acceso a los repositorios: listados de versiones y POMs de BOM."""
+
+    def __init__(self, timeout: int = 15, retries: int = 3, jobs: int = 8):
         self.timeout = timeout
         self.retries = retries
         self.jobs = max(1, jobs)
-        self._versions_cache: Dict[str, Optional[List[str]]] = {}
-        self._bom_cache: Dict[str, Dict[str, str]] = {}
+        self._versions_cache: dict[str, list[str] | None] = {}
+        self._bom_cache: dict[str, dict[str, str]] = {}
         # requests.Session no esta pensada para compartirse entre hilos, asi que
         # cada hilo del pool usa la suya y aprovecha su propio connection pool.
         self._local = threading.local()
-        log(f"Iniciando MavenVersionChecker (canal: {channel}, {self.jobs} hilos)...")
 
     @property
     def session(self) -> requests.Session:
@@ -374,21 +375,17 @@ class MavenVersionChecker:
             self._local.session = requests.Session()
         return self._local.session
 
-    def is_google_dependency(self, group_id: str) -> bool:
-        google_groups = ("com.google.", "androidx.", "android.arch.", "com.android.")
-        return group_id.startswith(google_groups)
-
-    def repos_for(self, dep: Dependency) -> List[str]:
+    def repos_for(self, dep: Dependency) -> list[str]:
         if dep.kind == "plugin":
             # com.android.* vive en Google; el resto en el portal de Gradle.
-            if self.is_google_dependency(dep.group_id):
+            if is_google_dependency(dep.group_id):
                 return [GOOGLE_MAVEN, PLUGIN_PORTAL, MAVEN_CENTRAL]
             return [PLUGIN_PORTAL, MAVEN_CENTRAL, GOOGLE_MAVEN]
-        if self.is_google_dependency(dep.group_id):
+        if is_google_dependency(dep.group_id):
             return [GOOGLE_MAVEN, MAVEN_CENTRAL]
         return [MAVEN_CENTRAL]
 
-    def _get(self, url: str) -> Optional[bytes]:
+    def _get(self, url: str) -> bytes | None:
         for attempt in range(1, self.retries + 1):
             try:
                 response = self.session.get(url, timeout=self.timeout)
@@ -410,7 +407,7 @@ class MavenVersionChecker:
             return None
         return None
 
-    def fetch_versions(self, dep: Dependency) -> Optional[List[str]]:
+    def versions_for(self, dep: Dependency) -> list[str] | None:
         """Lee el maven-metadata.xml del primer repositorio que lo tenga.
 
         Se usa el listado completo <versions> en vez de <release>/<latest>: ninguno
@@ -421,13 +418,13 @@ class MavenVersionChecker:
             self._versions_cache[dep.coordinate] = self._fetch_versions(dep)
         return self._versions_cache[dep.coordinate]
 
-    def prefetch_versions(self, deps: List[Dependency]) -> None:
+    def prefetch(self, deps: list[Dependency]) -> None:
         """Descarga en paralelo los metadatos de todo lo que aun no este en cache.
 
         El pool solo devuelve resultados; el cache se rellena desde el hilo
         principal, asi no hace falta sincronizarlo.
         """
-        pendientes: Dict[str, Dependency] = {}
+        pendientes: dict[str, Dependency] = {}
         for dep in deps:
             if dep.version and dep.coordinate not in self._versions_cache:
                 pendientes.setdefault(dep.coordinate, dep)
@@ -437,10 +434,11 @@ class MavenVersionChecker:
         log(f"\n🌐 Consultando {len(pendientes)} artefactos ({self.jobs} en paralelo)...")
         objetivos = list(pendientes.values())
         with ThreadPoolExecutor(max_workers=self.jobs) as pool:
-            for dep, versions in zip(objetivos, pool.map(self._fetch_versions, objetivos)):
+            resultados = pool.map(self._fetch_versions, objetivos)
+            for dep, versions in zip(objetivos, resultados, strict=True):
                 self._versions_cache[dep.coordinate] = versions
 
-    def _fetch_versions(self, dep: Dependency) -> Optional[List[str]]:
+    def _fetch_versions(self, dep: Dependency) -> list[str] | None:
         path = dep.group_id.replace(".", "/")
         found = None
         for base in self.repos_for(dep):
@@ -462,14 +460,14 @@ class MavenVersionChecker:
 
         return found
 
-    def fetch_bom_managed(self, dep: Dependency, version: str) -> Dict[str, str]:
+    def bom_managed(self, dep: Dependency, version: str) -> dict[str, str]:
         """Lee el <dependencyManagement> del POM de un BOM: modulo -> version."""
         cache_key = f"{dep.coordinate}:{version}"
         if cache_key in self._bom_cache:
             return self._bom_cache[cache_key]
 
         path = dep.group_id.replace(".", "/")
-        managed: Dict[str, str] = {}
+        managed: dict[str, str] = {}
         for base in self.repos_for(dep):
             url = f"{base}/{path}/{dep.artifact_id}/{version}/{dep.artifact_id}-{version}.pom"
             log(f"🔍 Leyendo BOM: {url}")
@@ -482,7 +480,7 @@ class MavenVersionChecker:
                 log(f"❌ POM invalido: {exc}")
                 continue
 
-            properties: Dict[str, str] = {}
+            properties: dict[str, str] = {}
             for node in root:
                 if _localname(node.tag) == "properties":
                     for prop in node:
@@ -511,9 +509,24 @@ class MavenVersionChecker:
         self._bom_cache[cache_key] = managed
         return managed
 
-    def resolve_versions(self, dep: Dependency) -> Dict[str, Optional[str]]:
+
+# --------------------------------------------------------------------------
+# Analisis del catalogo
+# --------------------------------------------------------------------------
+
+
+class MavenVersionChecker:
+    """Recorre el catalogo y produce el informe, apoyandose en un MavenRepository."""
+
+    def __init__(self, repository: MavenRepository, channel: str = "stable"):
+        self.repo = repository
+        self.channel = channel
+        self.min_rank = CHANNEL_MIN_RANK[channel]
+        log(f"Iniciando MavenVersionChecker (canal: {channel}, {repository.jobs} hilos)...")
+
+    def resolve_versions(self, dep: Dependency) -> dict[str, str | None]:
         """Calcula la ultima del canal pedido, la ultima estable y el ultimo pre-release."""
-        versions = self.fetch_versions(dep)
+        versions = self.repo.versions_for(dep)
         if not versions:
             return {"latest": None, "latest_stable": None, "latest_prerelease": None}
 
@@ -534,7 +547,7 @@ class MavenVersionChecker:
             "latest_prerelease": latest_prerelease,
         }
 
-    def process_toml_file(self, folder_path: str) -> Tuple[Dict[str, Any], List[str]]:
+    def process_toml_file(self, folder_path: str) -> tuple[dict[str, Any], list[str]]:
         file_path = os.path.join(folder_path, "libs.versions.toml")
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"No se encontro libs.versions.toml en {folder_path}")
@@ -544,13 +557,13 @@ class MavenVersionChecker:
         log(f"📖 {len(deps)} entradas leidas del catalogo")
 
         timestamp = datetime.now().isoformat()
-        result: Dict[str, Any] = {}
+        result: dict[str, Any] = {}
 
         # 1) Los BOM primero: hacen falta para resolver las que no llevan version.
         boms = [d for d in deps if d.is_bom and d.version]
-        managed_index: Dict[str, Tuple[Dependency, str]] = {}
+        managed_index: dict[str, tuple[Dependency, str]] = {}
         for bom in boms:
-            for coordinate, version in self.fetch_bom_managed(bom, bom.version).items():
+            for coordinate, version in self.repo.bom_managed(bom, bom.version).items():
                 managed_index.setdefault(coordinate, (bom, version))
 
         # 2) Atribuir su version efectiva a las que dependen de un BOM.
@@ -562,7 +575,7 @@ class MavenVersionChecker:
             dep.managed_by = f"{bom.artifact_id} {bom.version}"
 
         # 3) Descargar los metadatos en paralelo antes de comparar nada.
-        self.prefetch_versions([d for d in deps if not d.managed_by])
+        self.repo.prefetch([d for d in deps if not d.managed_by])
 
         # 4) Comprobar cada entrada.
         for dep in deps:
@@ -598,10 +611,10 @@ class MavenVersionChecker:
         log(f"\n✅ Completado. Dependencias analizadas: {len(result)}")
         return result, warnings
 
-    def _bom_diff(self, bom: Dependency, new_version: str, deps: List[Dependency]) -> Dict[str, Any]:
+    def _bom_diff(self, bom: Dependency, new_version: str, deps: list[Dependency]) -> dict[str, Any]:
         """Que versiones cambiarian en las dependencias del catalogo al subir el BOM."""
-        actual = self.fetch_bom_managed(bom, bom.version)
-        nueva = self.fetch_bom_managed(bom, new_version)
+        actual = self.repo.bom_managed(bom, bom.version)
+        nueva = self.repo.bom_managed(bom, new_version)
         usados = {d.coordinate for d in deps if d.managed_by and d.managed_by.startswith(bom.artifact_id)}
 
         cambios = {}
@@ -612,11 +625,11 @@ class MavenVersionChecker:
                 cambios[coordinate] = {"from": antes, "to": despues}
         return cambios
 
-    def _entry(self, dep, timestamp, status, resolved) -> Dict[str, Any]:
+    def _entry(self, dep, timestamp, status, resolved) -> dict[str, Any]:
         if dep.kind == "plugin":
             url = f"https://plugins.gradle.org/plugin/{dep.group_id}"
             dep_type = "plugin"
-        elif self.is_google_dependency(dep.group_id):
+        elif is_google_dependency(dep.group_id):
             url = f"https://maven.google.com/web/index.html#{dep.group_id}"
             dep_type = "google"
         else:
@@ -648,7 +661,7 @@ class MavenVersionChecker:
 # --------------------------------------------------------------------------
 
 
-def print_summary(result: Dict[str, Any], warnings: List[str]) -> None:
+def print_summary(result: dict[str, Any], warnings: list[str]) -> None:
     if not result:
         return
 
@@ -675,7 +688,7 @@ def print_summary(result: Dict[str, Any], warnings: List[str]) -> None:
 
     print("-" * total_width)
 
-    counts: Dict[str, int] = {}
+    counts: dict[str, int] = {}
     for info in result.values():
         counts[info["status_code"]] = counts.get(info["status_code"], 0) + 1
     resumen = "  ".join(
@@ -719,7 +732,8 @@ def main() -> int:
 
     log("\n🚀 Iniciando verificador de versiones Maven")
 
-    checker = MavenVersionChecker(channel=channel, timeout=args.timeout, jobs=args.jobs)
+    repository = MavenRepository(timeout=args.timeout, jobs=args.jobs)
+    checker = MavenVersionChecker(repository, channel=channel)
     try:
         result, warnings = checker.process_toml_file(args.folder)
     except FileNotFoundError as exc:
