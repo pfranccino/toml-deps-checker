@@ -70,45 +70,61 @@ Cada canal incluye los más estables que él. Otras opciones: `-o/--output` para
 la ruta del JSON, `-q/--quiet` para silenciar el progreso, `-j/--jobs` para las
 peticiones en paralelo (por defecto 8) y `--timeout` para el tiempo por petición.
 
+## 🎚️ Ajustar qué se considera aceptable
+
+Los criterios por defecto son un punto de partida, no una verdad universal. Dos flags
+los mueven:
+
+| Flag | Por defecto | Qué controla |
+|---|---|---|
+| `--patch-threshold N` | `5` | Cuántos parches por detrás se toleran antes de dejar de ser 🟢 |
+| `--calver-months N` | `6` | Meses de retraso de un BOM con versionado por fecha para marcarlo 🔴 |
+
+El mismo catálogo con criterios distintos:
+
+```bash
+# Por defecto: tolerante con los parches
+$ ./check-dependencies.sh ./gradle
+🟡 androidx.compose:compose-bom                 2026.04.01  2026.08.00
+🟢 com.fasterxml.jackson.core:jackson-databind  2.22.0      2.22.2
+
+# Estricto: cualquier parche cuenta, y 3 meses de BOM ya es rojo
+$ ./check-dependencies.sh ./gradle --patch-threshold 0 --calver-months 3
+🔴 androidx.compose:compose-bom                 2026.04.01  2026.08.00
+🟡 com.fasterxml.jackson.core:jackson-databind  2.22.0      2.22.2
+```
+
+`--patch-threshold 0` significa "cualquier versión por detrás me interesa". Súbelo si
+el informe te resulta ruidoso.
+
+Para no repetir los flags, envuélvelos en un script del proyecto:
+
+```bash
+#!/bin/bash
+# scripts/deps.sh — criterio acordado por el equipo
+exec ./check-dependencies.sh ./gradle --patch-threshold 2 --calver-months 4 "$@"
+```
+
 ## 🤖 Uso en CI
 
-Por defecto el script **nunca falla por política**: analiza, informa y sale con 0. Para
-que un pipeline pueda bloquear, se usa `--fail-on`:
-
-```bash
-./check-dependencies.sh ./app/gradle --fail-on major   # falla si hay algún 🔴
-./check-dependencies.sh ./app/gradle --fail-on minor   # 🔴 y los minor
-./check-dependencies.sh ./app/gradle --fail-on any     # cualquier desactualización
-```
-
-Las dependencias en ⚫ (no se pudieron consultar) **nunca hacen fallar**: que un
-repositorio no responda es un problema de red, no un incumplimiento, y no tiene
-sentido teñir el build de rojo por ello. Sí se listan aparte al final para que no
-pasen desapercibidas.
-
-Los umbrales también son ajustables, por si el criterio por defecto no encaja:
-
-```bash
---patch-threshold 0    # cualquier patch por detrás cuenta como desactualizado
---calver-months 3      # un BOM CalVer con 3 meses de retraso ya es 🔴
-```
-
-### GitHub Actions
+La herramienta **informa, no bloquea**: siempre sale con código 0 salvo que el análisis
+en sí falle (falta el `libs.versions.toml`, o es inválido). Un job que la ejecute no se
+pondrá rojo porque haya dependencias viejas; genera el informe y lo publica.
 
 ```yaml
-- name: Comprobar dependencias
-  run: ./check-dependencies.sh ./gradle --fail-on major --quiet
+- name: Analizar dependencias
+  run: ./check-dependencies.sh ./gradle --quiet
 
 - name: Publicar informe
-  if: always()          # también cuando el paso anterior falla
   uses: actions/upload-artifact@v4
   with:
     name: dependency-status
     path: dependency_status.json
 ```
 
-El `if: always()` importa: sin él, el informe se pierde justo cuando falla, que es
-cuando hace falta leerlo.
+El JSON incluye `status_code` (`ok`, `patch`, `minor`, `major`, `prerelease`, `managed`,
+`unknown`), pensado para que otro paso lo procese: publicarlo como comentario, alimentar
+un dashboard o abrir tickets.
 
 ## 🧪 Tests
 

@@ -73,22 +73,6 @@ STATUS_EMOJI = {
     "unknown": "⚫",
 }
 
-# Gravedad de cada estado, para decidir el codigo de salida en CI.
-# "unknown" vale 0 a proposito: que un repositorio no responda es un aviso, no
-# un incumplimiento de politica, y no debe tenyir el build de rojo.
-STATUS_SEVERITY = {
-    "major": 3,
-    "minor": 2,
-    "patch": 1,
-    "prerelease": 1,
-    "ok": 0,
-    "managed": 0,
-    "unknown": 0,
-}
-
-# --fail-on <nivel>: gravedad minima que hace fallar la ejecucion.
-FAIL_LEVELS = {"never": 99, "major": 3, "minor": 2, "any": 1}
-
 _QUIET = False
 
 
@@ -696,23 +680,6 @@ class MavenVersionChecker:
 # --------------------------------------------------------------------------
 
 
-def policy_violations(result: dict[str, Any], fail_on: str) -> list[str]:
-    """Dependencias que incumplen la politica de --fail-on, de peor a mejor.
-
-    Las que salen en ⚫ nunca cuentan: que un repositorio no responda es un
-    aviso, no un incumplimiento, y no debe hacer fallar el build.
-    """
-    if fail_on == "never":
-        return []
-    umbral = FAIL_LEVELS[fail_on]
-    incumplen = [
-        (STATUS_SEVERITY[info["status_code"]], nombre)
-        for nombre, info in result.items()
-        if STATUS_SEVERITY[info["status_code"]] >= umbral
-    ]
-    return [nombre for _, nombre in sorted(incumplen, key=lambda x: (-x[0], x[1]))]
-
-
 def print_summary(result: dict[str, Any], warnings: list[str]) -> None:
     if not result:
         return
@@ -778,14 +745,6 @@ def main() -> int:
         "-j", "--jobs", type=int, default=8, help="Peticiones en paralelo (por defecto: 8)"
     )
     parser.add_argument(
-        "--fail-on",
-        choices=tuple(FAIL_LEVELS),
-        default="never",
-        help="Sale con código 1 si alguna dependencia llega a este nivel. "
-             "'major' solo 🔴; 'minor' añade los minor; 'any' cualquier desactualización. "
-             "Las ⚫ nunca hacen fallar (por defecto: never).",
-    )
-    parser.add_argument(
         "--patch-threshold",
         type=int,
         default=PATCH_THRESHOLD,
@@ -834,23 +793,6 @@ def main() -> int:
 
     print_summary(result, warnings)
     print(f"\n💾 Resultados guardados en: {output_file}")
-
-    sin_resolver = [n for n, i in result.items() if i["status_code"] == "unknown"]
-    if sin_resolver and args.fail_on != "never":
-        # No cuentan para el código de salida, pero no pueden pasar en silencio:
-        # un repositorio caído deja huecos en el análisis, no un visto bueno.
-        print(
-            f"\n⚫ {len(sin_resolver)} sin verificar (no afectan al código de salida): "
-            + ", ".join(sin_resolver)
-        )
-
-    incumplen = policy_violations(result, args.fail_on)
-    if incumplen:
-        print(f"\n❌ --fail-on {args.fail_on}: {len(incumplen)} dependencias incumplen la política")
-        for nombre in incumplen:
-            print(f"   {result[nombre]['status']} {nombre} "
-                  f"{result[nombre]['version_used']} → {result[nombre]['latest_version']}")
-        return 1
 
     return 0
 
