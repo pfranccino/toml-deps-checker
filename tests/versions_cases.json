@@ -1,0 +1,19 @@
+{
+  "description": "Vectores de orden de versiones compartidos por la suite (toml-deps-checker y deps-changelog-diff). Cada lista de 'ascending' va estrictamente de menor a mayor; cada lista de 'equal' son versiones que ordenan igual.",
+  "ascending": [
+    ["1.9.0", "1.10.0", "2.0.0"],
+    ["1.2.5", "1.2.10", "1.3.0"],
+    ["1.2.3", "1.2.3.1", "1.2.4"],
+    ["1.2.3.4", "1.2.3.9", "1.2.3.10", "1.2.4"],
+    ["1.13.0-alpha02", "1.13.0-beta01", "1.13.0-rc01", "1.13.0"],
+    ["1.0.0-alpha01", "1.0.0-alpha02", "1.0.0"],
+    ["5.0.0-alpha.16", "5.0.0"],
+    ["2.4.20-RC3", "2.4.20"],
+    ["1.0-M1", "1.0-M2", "1.0"],
+    ["2025.12.00", "2026.01.00", "2026.08.00"]
+  ],
+  "equal": [
+    ["1.2", "1.2.0", "1.2.0.0"],
+    ["1.2.3", "v1.2.3", "1.2.3+build5"]
+  ]
+}
