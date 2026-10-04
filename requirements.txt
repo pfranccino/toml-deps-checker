@@ -1,4 +1,0 @@
-requests>=2.31.0
-
-# tomllib entró en la stdlib en Python 3.11; antes hace falta el backport.
-tomli>=2.0.1; python_version < "3.11"

@@ -18,39 +18,40 @@ Un script automatizado para verificar y comparar las versiones de dependencias M
   - ⚫ Estado desconocido (no se pudo verificar)
 - 🏷️ Distingue entre dependencias de Google y Maven Central
 - 💾 Genera reporte JSON detallado
-- 🐍 Manejo automático de entorno virtual Python
 
 ## 📋 Prerrequisitos
 
-- Python 3.11+ (para `tomllib`; en versiones anteriores, `pip install tomli`)
-- Bash
+- Python 3.10+
+- [pipx](https://pipx.pypa.io/)
 - Acceso a internet para consultas Maven
 
 ## 🛠️ Instalación
 
-1. Clona este repositorio:
 ```bash
-git clone https://github.com/pfranccino/toml-deps-checker.git
-cd toml-deps-checker
+pipx install git+https://github.com/pfranccino/toml-deps-checker
 ```
 
-2. Dale permisos de ejecución al script:
-```bash
-chmod +x check-dependencies.sh
-```
+Deja disponible el comando `toml-deps-checker`. Para actualizarlo: `pipx upgrade toml-deps-checker`.
 
 ## 📖 Uso
 
-Ejecuta el script proporcionando la ruta a tu directorio Gradle que contiene `libs.versions.toml`:
+Desde la raíz de cualquier proyecto Android:
 
 ```bash
-./check-dependencies.sh /ruta/al/directorio/gradle
+toml-deps-checker
 ```
 
-### Ejemplo:
+También acepta una ruta: la raíz del proyecto, el directorio `gradle/` o el propio archivo.
+
 ```bash
-./check-dependencies.sh ./app/gradle
+toml-deps-checker ~/proyectos/mi-app
+toml-deps-checker ./gradle
+toml-deps-checker ./gradle/libs.versions.toml
 ```
+
+El informe se escribe en `dependency_status.json`, **en el directorio desde el que lo
+ejecutas** (o donde digas con `-o`). El progreso sale por stderr y el resumen por stdout,
+así que `toml-deps-checker > resumen.txt` se queda solo con la tabla.
 
 ### Canales de versión
 
@@ -61,15 +62,16 @@ determinan el veredicto, pero sí se reportan como información adicional en el 
 Si quieres que el veredicto tenga en cuenta versiones no estables:
 
 ```bash
-./check-dependencies.sh ./app/gradle --channel rc      # estables + rc
-./check-dependencies.sh ./app/gradle --channel beta    # estables + rc + beta
-./check-dependencies.sh ./app/gradle --channel alpha   # todo
-./check-dependencies.sh ./app/gradle --include-prereleases   # atajo de --channel alpha
+toml-deps-checker --channel rc      # estables + rc
+toml-deps-checker --channel beta    # estables + rc + beta
+toml-deps-checker --channel alpha   # todo
+toml-deps-checker --include-prereleases   # atajo de --channel alpha
 ```
 
 Cada canal incluye los más estables que él. Otras opciones: `-o/--output` para elegir
-la ruta del JSON, `-q/--quiet` para silenciar el progreso, `-j/--jobs` para las
-peticiones en paralelo (por defecto 8) y `--timeout` para el tiempo por petición.
+la ruta del JSON, `--schema v1|v2` para su forma (ver [Salida](#-salida)), `-q/--quiet`
+para silenciar el progreso, `-j/--jobs` para las peticiones en paralelo (por defecto 8),
+`--timeout` para el tiempo por petición y `--version`.
 
 ## 🎚️ Cómo se decide el color
 
@@ -81,7 +83,8 @@ Para cada dependencia se compara la versión en uso con la última del canal ele
    tupla completa, así que ir por delante nunca se marca como desactualizado.
 2. **¿Ambas usan versionado por fecha?** (el primer número es un año entre 2000 y 2999)
    → se mide en **meses**, ver más abajo.
-3. **Si no**, se aplica semver: major → 🔴, minor → 🟡, patch → según el umbral.
+3. **Si no**, se aplica semver: major → 🔴, minor → 🟡, patch → según el umbral. Una
+   cuarta posición (`1.2.3.4` → `1.2.3.10`) cuenta como patch, con el mismo umbral.
 4. **¿Mismos números pero distinto canal?** (estás en un `-alpha` y ya salió la final)
    → 🟡.
 
@@ -146,7 +149,7 @@ La rama de meses se elige por **el formato de la versión**, no por el tipo de a
 `firebase-bom` es un BOM y usa major/minor, porque su versión es `34.18.0`:
 
 ```bash
-$ ./check-dependencies.sh ./gradle --calver-months 2
+$ toml-deps-checker --calver-months 2
 🔴 androidx.compose:compose-bom      2026.04.01  2026.08.00   ← CalVer, le afecta
 🟡 com.google.firebase:firebase-bom  34.10.0     34.18.0      ← semver, ni se entera
 🟡 com.squareup.okhttp3:okhttp       5.4.0       5.5.0        ← semver, ni se entera
@@ -163,7 +166,7 @@ Como son flags, para no repetirlos envuélvelos en un script del proyecto:
 ```bash
 #!/bin/bash
 # scripts/deps.sh — criterio acordado por el equipo
-exec ./check-dependencies.sh ./gradle --patch-threshold 2 --calver-months 4 "$@"
+exec toml-deps-checker --patch-threshold 2 --calver-months 4 "$@"
 ```
 
 ## 🤖 Uso en CI
@@ -174,7 +177,9 @@ pondrá rojo porque haya dependencias viejas; genera el informe y lo publica.
 
 ```yaml
 - name: Analizar dependencias
-  run: ./check-dependencies.sh ./gradle --quiet
+  run: |
+    pipx install git+https://github.com/pfranccino/toml-deps-checker
+    toml-deps-checker --quiet
 
 - name: Publicar informe
   uses: actions/upload-artifact@v4
@@ -193,12 +198,17 @@ Las funciones puras (parseo del catálogo, orden de versiones, canales, CalVer,
 variantes) están cubiertas por tests que no tocan la red:
 
 ```bash
-python -m unittest discover -v
+pip install -e ".[test]"
+pytest
 ```
+
+`tests/versions_cases.json` son vectores de orden de versiones compartidos con
+`deps-changelog-diff`: si uno de los dos cambia cómo ordena, el otro debe seguir
+pasándolos.
 
 ## 📊 Salida
 
-El script genera un archivo `dependency_status.json` con información detallada de cada dependencia:
+La herramienta genera un archivo `dependency_status.json` con información detallada de cada dependencia:
 
 ```json
 {
@@ -225,28 +235,57 @@ El script genera un archivo `dependency_status.json` con información detallada 
 | `channel` | Canal usado en esta ejecución. |
 | `status_code` | Versión legible por máquina del `status`: `ok`, `patch`, `minor`, `major`, `prerelease`, `managed`, `unknown`. |
 
+### Esquema v2 (`--schema v2`)
+
+El formato de arriba es el **v1**, y sigue siendo el de por defecto. Con `--schema v2`
+el mismo contenido va envuelto con un identificador de esquema y los datos de la
+ejecución:
+
+```json
+{
+  "schema": "toml-deps-checker/status-2",
+  "meta": {
+    "generated_at": "2026-10-04T12:00:00",
+    "tool_version": "0.2.0",
+    "catalog": "gradle/libs.versions.toml",
+    "channel": "stable",
+    "thresholds": {"patch": 5, "calver_months": 6},
+    "warnings": ["compose-ui: sin version y ningun BOM del catalogo la gestiona"]
+  },
+  "dependencies": {
+    "androidx.compose.foundation:foundation": { "...": "la misma entrada que en v1" }
+  }
+}
+```
+
+Diferencias con v1: `timestamp` y `channel` salen de cada entrada y quedan solo en
+`meta`, y los avisos (entradas que no se pudieron analizar) llegan al JSON en
+`meta.warnings`, no solo a la consola.
+
 ## 🏗️ Estructura del proyecto
 
 ```
-├── check-dependencies.sh     # Script principal de Bash
-├── version-stats.py          # Script de Python para análisis
-├── test_version_stats.py     # Tests (sin red)
-├── requirements.txt          # Dependencias de Python
-├── README.md                 # Este archivo
-└── dependency_status.json    # Archivo de salida (generado)
+├── pyproject.toml
+├── src/toml_deps_checker/
+│   ├── cli.py                # Línea de comandos y salida
+│   ├── checker.py            # Análisis del catálogo
+│   ├── catalog.py            # Lectura de libs.versions.toml
+│   ├── maven.py              # Acceso a los repositorios y lectura de BOM
+│   ├── versions.py           # Orden y comparación de versiones
+│   └── progress.py           # Log de progreso (stderr)
+├── tests/                    # Tests (sin red)
+└── check-dependencies.sh     # Atajo para desarrollo: ejecuta el clon sin instalarlo
 ```
 
 ## ⚙️ Cómo funciona
 
-1. **Validación**: Verifica que existe el directorio y el archivo `libs.versions.toml`
-2. **Entorno virtual**: Crea y activa un entorno virtual Python
-3. **Instalación**: Instala las dependencias Python necesarias (`requests`)
-4. **Análisis**: 
+1. **Localización**: Encuentra el `libs.versions.toml` a partir de la ruta indicada
+2. **Análisis**:
    - Parsea el archivo `libs.versions.toml`
-   - Extrae información de dependencias
+   - Lee los BOM del catálogo para resolver las dependencias sin versión
    - Consulta Maven Central y/o Google Maven por las últimas versiones
-5. **Comparación**: Evalúa el estado de cada dependencia
-6. **Reporte**: Genera un archivo JSON con los resultados
+3. **Comparación**: Evalúa el estado de cada dependencia
+4. **Reporte**: Genera un archivo JSON con los resultados
 
 ## 🔧 Configuración
 
@@ -275,7 +314,11 @@ Los BOM se detectan solos (artefactos acabados en `-bom`) y reciben un trato apa
 
 - Las dependencias **sin versión propia** se resuelven leyendo el
   `<dependencyManagement>` del POM del BOM, así que dejan de ser invisibles y se
-  reportan con su versión efectiva y el BOM que las fija.
+  reportan con su versión efectiva y el BOM que las fija. Se resuelven las
+  propiedades (`${project.version}` y las anidadas), se sigue el `<parent>` y se
+  incluyen los BOM importados (`<scope>import</scope>`).
+- Si un BOM no se puede leer, se avisa con un mensaje propio ("no se pudo leer el BOM
+  X") en vez de decir que ningún BOM gestiona sus dependencias.
 - Esas dependencias **no llevan veredicto propio** (salen como ⚪). No se pueden
   actualizar por separado: se sube el BOM. Marcarlas en rojo llenaría el informe de
   quince alertas que se arreglan todas con un solo cambio de línea.

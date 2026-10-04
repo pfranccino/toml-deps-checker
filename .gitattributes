@@ -1,0 +1,2 @@
+# Con CRLF el shebang y cada linea del script fallan en bash.
+*.sh text eol=lf

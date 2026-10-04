@@ -1,18 +1,11 @@
-#!/usr/bin/env python3
-"""Tests de las funciones puras de version-stats.py. No tocan la red.
-
-Ejecutar con:  python -m unittest discover -v
-"""
-import importlib.util
+"""Orden y comparacion de versiones. No tocan la red."""
+import json
 import os
-import tempfile
 import unittest
 
-_SPEC = importlib.util.spec_from_file_location(
-    "version_stats", os.path.join(os.path.dirname(os.path.abspath(__file__)), "version-stats.py")
-)
-vs = importlib.util.module_from_spec(_SPEC)
-_SPEC.loader.exec_module(vs)
+from toml_deps_checker import versions as vs
+
+_CASES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "versions_cases.json")
 
 
 class TestVersionKey(unittest.TestCase):
@@ -23,6 +16,10 @@ class TestVersionKey(unittest.TestCase):
     def test_ignora_prefijo_y_metadatos(self):
         self.assertEqual(vs.version_key("v1.2.3")[0], (1, 2, 3))
         self.assertEqual(vs.version_key("1.2.3+build5")[0], (1, 2, 3))
+
+    def test_conserva_la_cuarta_posicion(self):
+        self.assertEqual(vs.version_key("1.2.3.4")[0], (1, 2, 3, 4))
+        self.assertEqual(vs.version_key("1.2.3.0"), vs.version_key("1.2.3"))
 
     def test_prerelease_ordena_por_debajo_de_su_final(self):
         self.assertLess(vs.version_key("5.0.0-alpha.16"), vs.version_key("5.0.0"))
@@ -35,6 +32,27 @@ class TestVersionKey(unittest.TestCase):
 
     def test_version_no_numerica(self):
         self.assertIsNone(vs.version_key("RELEASE"))
+
+
+class TestVectoresCompartidos(unittest.TestCase):
+    """versions_cases.json lo validan tambien los demas repos de la suite."""
+
+    @classmethod
+    def setUpClass(cls):
+        with open(_CASES, encoding="utf-8") as handle:
+            cls.cases = json.load(handle)
+
+    def test_ascendentes(self):
+        for serie in self.cases["ascending"]:
+            for lower, higher in zip(serie, serie[1:]):
+                with self.subTest(lower=lower, higher=higher):
+                    self.assertLess(vs.version_key(lower), vs.version_key(higher))
+
+    def test_iguales(self):
+        for grupo in self.cases["equal"]:
+            for other in grupo[1:]:
+                with self.subTest(first=grupo[0], other=other):
+                    self.assertEqual(vs.version_key(grupo[0]), vs.version_key(other))
 
 
 class TestQualifierRank(unittest.TestCase):
@@ -79,6 +97,29 @@ class TestCompareVersions(unittest.TestCase):
     def test_sin_latest(self):
         self.assertEqual(vs.compare_versions("1.0.0", None), "unknown")
         self.assertEqual(vs.compare_versions("1.0.0", "no-es-una-version"), "unknown")
+
+
+class TestCuatroPosiciones(unittest.TestCase):
+    """Antes se truncaba a 3 y 1.2.3.4 -> 1.2.3.9 salia igual."""
+
+    def test_la_cuarta_posicion_cuenta_como_patch(self):
+        self.assertEqual(vs.compare_versions("1.2.3.4", "1.2.3.10"), "patch")
+        self.assertEqual(vs.compare_versions("1.2.3", "1.2.3.9"), "patch")
+
+    def test_y_respeta_el_umbral_de_patch(self):
+        self.assertEqual(vs.compare_versions("1.2.3.4", "1.2.3.9"), "ok")
+        self.assertEqual(vs.compare_versions("1.2.3.4", "1.2.3.9", patch_threshold=0), "patch")
+
+    def test_mas_nueva_en_la_cuarta_es_ok(self):
+        self.assertEqual(vs.compare_versions("1.2.3.9", "1.2.3.4"), "ok")
+        self.assertEqual(vs.compare_versions("1.2.3.0", "1.2.3"), "ok")
+
+    def test_las_tres_primeras_siguen_mandando(self):
+        self.assertEqual(vs.compare_versions("1.2.3.9", "1.3.0"), "minor")
+
+    def test_pick_latest_no_depende_del_orden(self):
+        self.assertEqual(vs.pick_latest(["1.2.3.9", "1.2.3.10"], vs.STABLE), "1.2.3.10")
+        self.assertEqual(vs.pick_latest(["1.2.3.10", "1.2.3.9"], vs.STABLE), "1.2.3.10")
 
 
 class TestCalVer(unittest.TestCase):
@@ -147,83 +188,6 @@ class TestPickLatest(unittest.TestCase):
 
     def test_lista_vacia(self):
         self.assertIsNone(vs.pick_latest([], vs.STABLE))
-
-
-class TestParseCatalog(unittest.TestCase):
-    CATALOGO = """
-[versions]
-coreKtx = "1.13.1"
-guava = "31.1-jre"
-agp = "8.5.0"
-rica = { require = "4.12.0" }
-
-[libraries]
-core-ktx = { module = "androidx.core:core-ktx", version.ref = "coreKtx" }
-guava = { group = "com.google.guava", name = "guava", version.ref = "guava" }
-retrofit = { module = "com.squareup.retrofit2:retrofit", version = "2.9.0" }
-gson = "com.google.code.gson:gson:2.10.1"
-okhttp = { module = "com.squareup.okhttp3:okhttp", version.ref = "rica" }
-compose-ui = { module = "androidx.compose.ui:ui" }
-compose-bom = { module = "androidx.compose:compose-bom", version = "2025.12.00" }
-rota = { module = "sin-dos-puntos" }
-ref-inexistente = { module = "com.x:y", version.ref = "noExiste" }
-
-[plugins]
-android-application = { id = "com.android.application", version.ref = "agp" }
-"""
-
-    def setUp(self):
-        handle = tempfile.NamedTemporaryFile(
-            "w", suffix=".toml", delete=False, encoding="utf-8"
-        )
-        handle.write(self.CATALOGO)
-        handle.close()
-        self.path = handle.name
-        self.deps, self.warnings = vs.parse_catalog(self.path)
-        self.por_alias = {d.alias: d for d in self.deps}
-
-    def tearDown(self):
-        os.unlink(self.path)
-
-    def test_module_con_version_ref(self):
-        dep = self.por_alias["core-ktx"]
-        self.assertEqual(dep.coordinate, "androidx.core:core-ktx")
-        self.assertEqual(dep.version, "1.13.1")
-
-    def test_group_y_name(self):
-        dep = self.por_alias["guava"]
-        self.assertEqual(dep.coordinate, "com.google.guava:guava")
-        self.assertEqual(dep.version, "31.1-jre")
-
-    def test_version_literal(self):
-        self.assertEqual(self.por_alias["retrofit"].version, "2.9.0")
-
-    def test_atajo_en_string(self):
-        dep = self.por_alias["gson"]
-        self.assertEqual(dep.coordinate, "com.google.code.gson:gson")
-        self.assertEqual(dep.version, "2.10.1")
-
-    def test_rich_version(self):
-        self.assertEqual(self.por_alias["okhttp"].version, "4.12.0")
-
-    def test_sin_version_la_gestiona_un_bom(self):
-        self.assertIsNone(self.por_alias["compose-ui"].version)
-
-    def test_deteccion_de_bom(self):
-        self.assertTrue(self.por_alias["compose-bom"].is_bom)
-        self.assertFalse(self.por_alias["core-ktx"].is_bom)
-
-    def test_plugin_usa_el_artefacto_marcador(self):
-        dep = self.por_alias["android-application"]
-        self.assertEqual(dep.kind, "plugin")
-        self.assertEqual(dep.artifact_id, "com.android.application.gradle.plugin")
-        self.assertEqual(dep.display, "com.android.application")
-        self.assertEqual(dep.version, "8.5.0")
-
-    def test_entradas_invalidas_avisan_en_vez_de_desaparecer(self):
-        self.assertNotIn("rota", self.por_alias)
-        self.assertTrue(any("rota" in w for w in self.warnings))
-        self.assertTrue(any("noExiste" in w for w in self.warnings))
 
 
 if __name__ == "__main__":
