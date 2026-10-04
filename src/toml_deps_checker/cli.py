@@ -59,7 +59,10 @@ def _display_path(path: str | None) -> str | None:
     if path is None:
         return None
     try:
-        path = os.path.relpath(path)
+        # Se resuelven las dos rutas: si solo una pasa por un enlace simbolico
+        # (macOS: /var -> /private/var) o por un nombre corto de Windows
+        # (PAULAY~1), relpath sube hasta la raiz.
+        path = os.path.relpath(os.path.realpath(path), os.path.realpath(os.getcwd()))
     except ValueError:  # otra unidad en Windows
         path = os.path.abspath(path)
     return path.replace(os.sep, "/")
